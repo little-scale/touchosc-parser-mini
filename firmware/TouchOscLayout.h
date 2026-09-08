@@ -41,6 +41,10 @@ enum TouchOscControlFlag : uint32_t {
   TocTextWrap = 1u << 19,
   TocTextClip = 1u << 20,
   TocMonospaced = 1u << 21,
+  TocOrientationEast = 1u << 22,
+  TocOrientationSouth = 2u << 22,
+  TocOrientationWest = 3u << 22,
+  TocOrientationMask = 3u << 22,
 };
 
 struct TouchOscEvent {
@@ -57,6 +61,7 @@ class TouchOscLayout {
   bool begin();
   bool loadActive();
   bool installUploaded();
+  bool installEmbedded(const uint8_t *data, size_t size);
   bool removeActive();
   bool active() const { return active_; }
   const String &lastError() const { return lastError_; }

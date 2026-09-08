@@ -22,6 +22,7 @@ enum class UiEventType : uint8_t {
   PendulumActive,
   WifiCredentials,
   OscSettings,
+  ToggleOscDeviceName,
   DeviceName,
   PhysicsSettings,
   ToggleBle,
@@ -64,6 +65,10 @@ class UserInterface {
   void wake();
   void noteMotion();
   void forceRedraw();
+  void setOscIncludeDeviceName(bool enabled) {
+    oscIncludeDeviceName_ = enabled;
+    if (wifiSetupActive_ && wifiSetupPage_ == WifiSetupPage::Menu) drawWifiSetup();
+  }
   bool isControlActive(MessageType type, uint8_t index) const;
 
  private:
@@ -98,6 +103,7 @@ class UserInterface {
   void readWifiSetupTouch();
   void handleWifiSetupTap(int16_t x, int16_t y);
   void startWifiScan();
+  void beginWifiScanAttempt();
   void serviceWifiSetup();
   void closeWifiSetup();
   void drawWifiSetup();
@@ -111,6 +117,7 @@ class UserInterface {
   bool oscSettingsValid() const;
   bool deviceNameValid() const;
   const char *keyboardRow(uint8_t row) const;
+  const char *deviceKeyboardRow(uint8_t row) const;
   TouchTarget hitTest(int16_t x, int16_t y) const;
   void beginTouch(TouchTarget target, int16_t x, int16_t y, ControlState &state);
   void moveTouch(int16_t x, int16_t y, ControlState &state);
@@ -160,8 +167,10 @@ class UserInterface {
   void drawPageButton();
   void flushXyRegion(int16_t x, int16_t y, int16_t width, int16_t height);
   void flushLayoutRegion(int16_t x, int16_t y, int16_t width, int16_t height);
-  void drawLayoutStatusOverlay(Arduino_GFX *target, bool wifiConnected);
-  void drawLandingScreen(Arduino_GFX *target, bool wifiConnected);
+  void drawLayoutStatusOverlay(Arduino_GFX *target, bool wifiConnected,
+                               bool imuOutputEnabled);
+  void drawLandingScreen(Arduino_GFX *target, bool wifiConnected,
+                         bool imuOutputEnabled);
   void updatePalette(const ControlState &state);
   void updatePowerStatus();
   uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) const;
@@ -182,6 +191,7 @@ class UserInterface {
   bool powerReady_ = false;
   TouchOscLayout touchOscLayout_;
   bool layoutWifiTouch_ = false;
+  bool layoutImuTouch_ = false;
   bool layoutPageTouch_ = false;
   bool ignoreTouchUntilRelease_ = false;
   uint32_t ignoreTouchStartedMs_ = 0;
@@ -282,8 +292,10 @@ class UserInterface {
   bool drawnCharging_ = false;
   bool layoutOverlayValid_ = false;
   bool drawnLayoutWifiConnected_ = false;
+  bool drawnLayoutImuOutputEnabled_ = false;
   int drawnLayoutBatteryPercent_ = -2;
   bool drawnLayoutCharging_ = false;
+  uint32_t drawnLandingIp_ = 0xffffffff;
 
   enum class WifiSetupPage : uint8_t {
     Menu,
@@ -303,7 +315,8 @@ class UserInterface {
   bool wifiSetupTouching_ = false;
   bool wifiScanPending_ = false;
   bool wifiShift_ = false;
-  bool wifiSymbols_ = false;
+  uint8_t wifiKeyboardMode_ = 0;
+  bool deviceKeyboardNumbers_ = false;
   bool wifiPasswordVisible_ = false;
   bool wifiPasswordError_ = false;
   WifiSetupPage wifiSetupPage_ = WifiSetupPage::Scanning;
@@ -314,9 +327,12 @@ class UserInterface {
   uint8_t wifiNetworkPage_ = 0;
   String wifiSelectedSsid_;
   String wifiPassword_;
+  String savedWifiSsid_;
+  String savedWifiPassword_;
   String oscTargetText_;
   String oscSendPortText_;
   String oscReceivePortText_;
+  bool oscIncludeDeviceName_ = true;
   String deviceNameText_;
   String savedDeviceName_;
   String defaultDeviceName_;
@@ -328,6 +344,7 @@ class UserInterface {
   uint32_t wifiSetupLastActivityMs_ = 0;
   uint32_t wifiScanStartedMs_ = 0;
   uint32_t wifiScanRetryAtMs_ = 0;
+  uint8_t wifiScanAttempt_ = 0;
   uint32_t wifiConnectStartedMs_ = 0;
   uint32_t wifiConnectedShownMs_ = 0;
 

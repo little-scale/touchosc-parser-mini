@@ -85,6 +85,15 @@ String OscTransport::addressFor(const char *control, uint8_t index) const {
   return address;
 }
 
+String OscTransport::layoutAddressFor(const char *address) const {
+  if (!settings_.oscIncludeDeviceName) return address ? String(address) : String();
+  String namespaced = "/";
+  namespaced += settings_.deviceName;
+  if (!address || address[0] != '/') namespaced += "/";
+  if (address) namespaced += address;
+  return namespaced;
+}
+
 bool OscTransport::sendPacket(const String &address, const char *types, const float *floats,
                               size_t floatCount, const int32_t *integers, size_t integerCount) {
   if (WiFi.status() != WL_CONNECTED || settings_.oscTarget.isEmpty()) return false;
@@ -204,7 +213,7 @@ void OscTransport::sendImu(const ImuFrame &frame) {
 void OscTransport::sendLayout(const char *address, const float *values,
                               uint8_t valueCount) {
   if (!address || address[0] != '/' || valueCount == 0 || valueCount > 2) return;
-  sendPacket(String(address), valueCount == 1 ? ",f" : ",ff",
+  sendPacket(layoutAddressFor(address), valueCount == 1 ? ",f" : ",ff",
              values, valueCount, nullptr, 0);
 }
 
@@ -220,6 +229,7 @@ bool OscTransport::decodePacket(const uint8_t *data, size_t length, RemoteMessag
   const String root = "/" + settings_.deviceName + "/";
   const bool deviceAddress = address.startsWith(root);
   const String endpoint = deviceAddress ? address.substring(root.length()) : String();
+  const String layoutAddress = deviceAddress ? String("/") + endpoint : address;
 
   auto readFloat = [&](size_t position, float &value) {
     if (position + 4 > length) return false;
@@ -237,7 +247,7 @@ bool OscTransport::decodePacket(const uint8_t *data, size_t length, RemoteMessag
   // address collision updates the visible layout.
   if (layoutMode_ && (types == ",f" || types == ",ff") && address.startsWith("/")) {
     message.type = MessageType::Layout;
-    message.address = address;
+    message.address = layoutAddress;
     message.valueCount = types == ",ff" ? 2 : 1;
     for (uint8_t index = 0; index < message.valueCount; ++index) {
       if (!readFloat(offset + index * 4, message.values[index]) ||
@@ -247,7 +257,7 @@ bool OscTransport::decodePacket(const uint8_t *data, size_t length, RemoteMessag
   }
   if (layoutMode_ && types == ",s" && address.startsWith("/")) {
     message.type = MessageType::LayoutText;
-    message.address = address;
+    message.address = layoutAddress;
     return readPaddedString(data, length, offset, message.textValue);
   }
 

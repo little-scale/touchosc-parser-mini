@@ -5,3 +5,8 @@ firmware/build/
 vendor/waveshare-v2/SensorLib/
 vendor/waveshare-v2/GFX_Library_for_Arduino/src/font/u8g2_*.h
 vendor/waveshare-v2/GFX_Library_for_Arduino/src/font/chinese4.list
+firmware/Provisioning.local.h
+firmware/DefaultLayout.local.h
+private-layouts/
+__pycache__/
+*.py[cod]

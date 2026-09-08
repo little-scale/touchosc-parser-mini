@@ -5,6 +5,20 @@
 
 #include <Arduino.h>
 
+inline uint16_t hardwareDeviceSuffix() {
+  // ESP.getEfuseMac() stores the displayed MAC bytes least-significant first.
+  // The low bytes are the shared vendor prefix; use the final displayed bytes.
+  const uint64_t mac = ESP.getEfuseMac();
+  return (static_cast<uint16_t>((mac >> 32) & 0xff) << 8) |
+         static_cast<uint16_t>((mac >> 40) & 0xff);
+}
+
+inline String hardwareDeviceName() {
+  char name[16];
+  snprintf(name, sizeof(name), "device-%04x", hardwareDeviceSuffix());
+  return String(name);
+}
+
 enum class InputSource : uint8_t {
   LocalTouch,
   Osc,
@@ -66,6 +80,7 @@ struct DeviceSettings {
   String oscTarget = "192.168.1.2";
   uint16_t oscSendPort = 9000;
   uint16_t oscReceivePort = 9001;
+  bool oscIncludeDeviceName = false;
   uint8_t imuRateHz = 25;
   bool imuOutputEnabled = false;
   bool bleEnabled = true;

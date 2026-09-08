@@ -37,6 +37,7 @@ class OscTransport {
                   size_t floatCount, const int32_t *integers, size_t integerCount);
   bool decodePacket(const uint8_t *data, size_t length, RemoteMessage &message) const;
   String addressFor(const char *control, uint8_t index) const;
+  String layoutAddressFor(const char *address) const;
 
   WiFiUDP udp_;
   DeviceSettings settings_;

@@ -1,0 +1,17 @@
+// Copy this file to Provisioning.local.h, fill in the values, and rebuild.
+// Provisioning.local.h is ignored by Git and must never be committed.
+// The compiled firmware binary will contain these values, including the Wi-Fi
+// password, so keep provisioned binaries private too.
+
+#pragma once
+
+// Increase this only when you deliberately want a new build to overwrite the
+// provisioned Wi-Fi and OSC settings on boards that received an older revision.
+#define TPM_PROVISIONING_REVISION 1
+
+#define TPM_WIFI_SSID "Your Wi-Fi network"
+#define TPM_WIFI_PASSWORD "Your Wi-Fi password"
+
+#define TPM_OSC_TARGET "192.168.1.100"
+#define TPM_OSC_SEND_PORT 9000
+#define TPM_OSC_RECEIVE_PORT 9001

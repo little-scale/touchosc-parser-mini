@@ -10,6 +10,7 @@
 namespace {
 constexpr uint8_t kFormatVersion = 3;
 constexpr uint32_t kMaximumFileSize = 32 * 1024;
+constexpr int16_t kStatusSafeHeight = 48;
 constexpr float kPi = 3.14159265358979323846f;
 constexpr uint32_t kSendIntervalMs = 20;
 
@@ -56,6 +57,18 @@ float normalizedAngle(float angle) {
   while (angle >= 2.0f * kPi) angle -= 2.0f * kPi;
   return angle;
 }
+
+uint8_t controlOrientation(uint32_t flags) {
+  return static_cast<uint8_t>((flags & TocOrientationMask) >> 22);
+}
+
+bool horizontalOrientation(uint8_t orientation) {
+  return orientation == 1 || orientation == 3;
+}
+
+float orientationAngle(uint8_t orientation) {
+  return orientation * kPi * 0.5f;
+}
 }  // namespace
 
 bool TouchOscLayout::begin() {
@@ -101,6 +114,38 @@ bool TouchOscLayout::installUploaded() {
   FFat.remove(backupPath);
   forceRedraw();
   return true;
+}
+
+bool TouchOscLayout::installEmbedded(const uint8_t *data, size_t size) {
+  if (!data || size < 16 || size > kMaximumFileSize) {
+    lastError_ = "Embedded layout size is invalid";
+    return false;
+  }
+  FFat.remove(kUploadPath);
+  File file = FFat.open(kUploadPath, FILE_WRITE);
+  if (!file) {
+    lastError_ = "Could not create embedded layout";
+    return false;
+  }
+  uint8_t buffer[512];
+  size_t offset = 0;
+  bool writeOk = true;
+  while (offset < size) {
+    const size_t amount = min(sizeof(buffer), size - offset);
+    memcpy_P(buffer, data + offset, amount);
+    if (file.write(buffer, amount) != amount) {
+      writeOk = false;
+      break;
+    }
+    offset += amount;
+  }
+  file.close();
+  if (!writeOk) {
+    FFat.remove(kUploadPath);
+    lastError_ = "Could not write embedded layout";
+    return false;
+  }
+  return installUploaded();
 }
 
 bool TouchOscLayout::removeActive() {
@@ -274,10 +319,16 @@ bool TouchOscLayout::loadFile(const char *path) {
 
 void TouchOscLayout::calculateTransform(int16_t screenWidth, int16_t screenHeight,
                                         float &scale, float &offsetX, float &offsetY) const {
+  const bool safeAreaLayout = canvasHeight_ <= screenHeight - kStatusSafeHeight;
+  const int16_t availableHeight = safeAreaLayout
+      ? screenHeight - kStatusSafeHeight
+      : screenHeight;
   scale = min(static_cast<float>(screenWidth) / canvasWidth_,
-              static_cast<float>(screenHeight) / canvasHeight_);
+              static_cast<float>(availableHeight) / canvasHeight_);
   offsetX = (screenWidth - canvasWidth_ * scale) * 0.5f;
-  offsetY = (screenHeight - canvasHeight_ * scale) * 0.5f;
+  offsetY = safeAreaLayout
+      ? screenHeight - canvasHeight_ * scale
+      : (screenHeight - canvasHeight_ * scale) * 0.5f;
 }
 
 uint16_t TouchOscLayout::blend(uint16_t under, const Rgba &over, float opacity) const {
@@ -378,35 +429,86 @@ void TouchOscLayout::drawControl(Arduino_GFX *target, const Control &c,
   }
   if (c.type == TouchOscControlType::Fader) {
     if (c.flags & TocBackground) target->fillRoundRect(x, y, w, h, radius, dim);
-    if ((c.flags & TocGridY) && c.gridStepsY > 1) {
-      for (uint8_t i = 1; i < c.gridStepsY; ++i) {
-        const int16_t gy = y + i * h / c.gridStepsY;
-        target->drawFastHLine(x, gy, w, grid);
+    const uint8_t orientation = controlOrientation(c.flags);
+    const bool horizontal = horizontalOrientation(orientation);
+    const uint8_t gridSteps = max(c.gridStepsX, c.gridStepsY);
+    float value = (c.flags & TocInverted) ? 1.0f - c.values[0] : c.values[0];
+    if (horizontal) {
+      const int16_t fill = roundf(value * w);
+      const bool west = orientation == 3;
+      if ((c.flags & TocBar) && fill > 0) {
+        target->fillRect(west ? x + w - fill : x, y, fill, h, medium);
+      }
+      if (c.flags & TocCursor) {
+        const int16_t cursorX = constrain(
+            static_cast<int16_t>(west ? x + w - roundf(value * w)
+                                      : x + roundf(value * w)),
+            static_cast<int16_t>(x + 2), static_cast<int16_t>(x + w - 3));
+        const int16_t cursorWidth = max<int16_t>(5, min<int16_t>(24, w / 7));
+        target->fillRoundRect(cursorX - cursorWidth / 2, y, cursorWidth, h,
+                              radius, bright);
+      }
+    } else {
+      const int16_t fill = roundf(value * h);
+      const bool south = orientation == 2;
+      if ((c.flags & TocBar) && fill > 0) {
+        target->fillRect(x, south ? y : y + h - fill, w, fill, medium);
+      }
+      if (c.flags & TocCursor) {
+        const int16_t cursorY = constrain(
+            static_cast<int16_t>(south ? y + roundf(value * h)
+                                       : y + h - roundf(value * h)),
+            static_cast<int16_t>(y + 2), static_cast<int16_t>(y + h - 3));
+        const int16_t cursorHeight = max<int16_t>(5, min<int16_t>(24, h / 7));
+        target->fillRoundRect(x, cursorY - cursorHeight / 2, w, cursorHeight,
+                              radius, bright);
       }
     }
-    float value = (c.flags & TocInverted) ? 1.0f - c.values[0] : c.values[0];
-    const int16_t fill = roundf(value * h);
-    if ((c.flags & TocBar) && fill > 0) target->fillRect(x, y + h - fill, w, fill, medium);
-    if (c.flags & TocCursor) {
-      const int16_t cy = constrain(static_cast<int16_t>(y + h - roundf(value * h)),
-                                   static_cast<int16_t>(y + 2),
-                                   static_cast<int16_t>(y + h - 3));
-      const int16_t cursorHeight = max<int16_t>(5, min<int16_t>(24, h / 7));
-      target->fillRoundRect(x, cy - cursorHeight / 2, w, cursorHeight, radius, bright);
+    // TouchOSC keeps the scale visible across the inactive background, bar
+    // fill, and cursor. Draw it last so every fader style behaves consistently
+    // with the rotary controls.
+    if ((c.flags & (TocGridX | TocGridY)) && gridSteps > 1) {
+      for (uint8_t i = 1; i < gridSteps; ++i) {
+        if (horizontal) {
+          target->drawFastVLine(x + i * w / gridSteps, y, h, grid);
+        } else {
+          target->drawFastHLine(x, y + i * h / gridSteps, w, grid);
+        }
+      }
     }
     if (c.flags & TocOutline) drawOutline(target, x, y, w, h, radius, bright, brackets);
     return;
   }
   if (c.type == TouchOscControlType::Xy) {
     if (c.flags & TocBackground) target->fillRoundRect(x, y, w, h, radius, dim);
+    const uint8_t orientation = controlOrientation(c.flags);
+    const bool horizontal = horizontalOrientation(orientation);
     if ((c.flags & TocGridX) && c.gridStepsX > 1) {
-      for (uint8_t i = 1; i < c.gridStepsX; ++i) target->drawFastVLine(x + i * w / c.gridStepsX, y, h, grid);
+      for (uint8_t i = 1; i < c.gridStepsX; ++i) {
+        if (horizontal) target->drawFastHLine(x, y + i * h / c.gridStepsX, w, grid);
+        else target->drawFastVLine(x + i * w / c.gridStepsX, y, h, grid);
+      }
     }
     if ((c.flags & TocGridY) && c.gridStepsY > 1) {
-      for (uint8_t i = 1; i < c.gridStepsY; ++i) target->drawFastHLine(x, y + i * h / c.gridStepsY, w, grid);
+      for (uint8_t i = 1; i < c.gridStepsY; ++i) {
+        if (horizontal) target->drawFastVLine(x + i * w / c.gridStepsY, y, h, grid);
+        else target->drawFastHLine(x, y + i * h / c.gridStepsY, w, grid);
+      }
     }
-    const int16_t px = x + roundf(c.values[0] * (w - 1));
-    const int16_t py = y + roundf((1.0f - c.values[1]) * (h - 1));
+    float displayX = c.values[0];
+    float displayY = 1.0f - c.values[1];
+    if (orientation == 1) {
+      displayX = c.values[1];
+      displayY = c.values[0];
+    } else if (orientation == 2) {
+      displayX = 1.0f - c.values[0];
+      displayY = c.values[1];
+    } else if (orientation == 3) {
+      displayX = 1.0f - c.values[1];
+      displayY = 1.0f - c.values[0];
+    }
+    const int16_t px = x + roundf(displayX * (w - 1));
+    const int16_t py = y + roundf(displayY * (h - 1));
     if (c.flags & TocLines) {
       target->drawFastVLine(px, y, h, bright);
       target->drawFastHLine(x, py, w, bright);
@@ -434,7 +536,8 @@ void TouchOscLayout::drawControl(Arduino_GFX *target, const Control &c,
                          cy + roundf(sinf(angle) * outer), grid);
       }
     }
-    const float angle = c.values[1] * 2.0f * kPi - kPi / 2.0f;
+    const float angle = c.values[1] * 2.0f * kPi - kPi / 2.0f +
+                        orientationAngle(controlOrientation(c.flags));
     const int16_t amplitudeRadius = roundf(c.values[0] * outer);
     const int16_t px = cx + roundf(cosf(angle) * c.values[0] * outer);
     const int16_t py = cy + roundf(sinf(angle) * c.values[0] * outer);
@@ -448,7 +551,8 @@ void TouchOscLayout::drawControl(Arduino_GFX *target, const Control &c,
   const int16_t inner = max<int16_t>(2, roundf(outer * 0.50f));
   if (c.type == TouchOscControlType::Encoder) {
     drawRing(target, cx, cy, outer, inner, 0.0f, 2.0f * kPi, dim);
-    const float cursorAngle = c.values[0] * 2.0f * kPi - kPi / 2.0f;
+    const float cursorAngle = c.values[0] * 2.0f * kPi - kPi / 2.0f +
+                              orientationAngle(controlOrientation(c.flags));
     const float cursorSpan = max(0.12f, 14.0f / outer);
     if (c.flags & TocCursor) drawRing(target, cx, cy, outer, inner,
                                       cursorAngle - cursorSpan, cursorAngle + cursorSpan, bright);
@@ -467,7 +571,8 @@ void TouchOscLayout::drawControl(Arduino_GFX *target, const Control &c,
   }
 
   // TouchOSC radial controls leave a sixty-degree gap centred at the bottom.
-  const float start = 2.0f * kPi / 3.0f;
+  const float start = 2.0f * kPi / 3.0f +
+                      orientationAngle(controlOrientation(c.flags));
   const float span = 5.0f * kPi / 3.0f;
   drawRing(target, cx, cy, outer, inner, start, start + span, dim);
   float value = (c.flags & TocInverted) ? 1.0f - c.values[0] : c.values[0];
@@ -632,6 +737,8 @@ void TouchOscLayout::draw(Arduino_GFX *target, int16_t screenWidth,
 }
 
 int8_t TouchOscLayout::hitTest(float x, float y) const {
+  // Exact geometry always wins, particularly where intentionally overlapping
+  // controls are present.
   for (int16_t index = controlCount_ - 1; index >= 0; --index) {
     const Control &c = controls_[index];
     if (c.page != activePage_ || !(c.flags & TocVisible) ||
@@ -643,6 +750,22 @@ int8_t TouchOscLayout::hitTest(float x, float y) const {
         const float dy = (y - c.y) / c.height * 2.0f - 1.0f;
         if (dx * dx + dy * dy > 1.0f) continue;
       }
+      return index;
+    }
+  }
+
+  // Short horizontal faders are harder to acquire on the small rounded
+  // display. Give faders a modest forgiving halo only after no exact control
+  // was hit, so the halo cannot steal a touch from a neighbouring control.
+  constexpr float kFaderTouchPadding = 10.0f;
+  for (int16_t index = controlCount_ - 1; index >= 0; --index) {
+    const Control &c = controls_[index];
+    if (c.page != activePage_ || c.type != TouchOscControlType::Fader ||
+        !(c.flags & TocVisible) || !(c.flags & TocInteractive)) continue;
+    if (x >= c.x - kFaderTouchPadding &&
+        x < c.x + c.width + kFaderTouchPadding &&
+        y >= c.y - kFaderTouchPadding &&
+        y < c.y + c.height + kFaderTouchPadding) {
       return index;
     }
   }
@@ -660,7 +783,8 @@ void TouchOscLayout::beginTouch(int16_t screenX, int16_t screenY,
   const Control &c = controls_[activeControl_];
   const float cx = c.x + c.width * 0.5f;
   const float cy = c.y + c.height * 0.5f;
-  previousAngle_ = atan2f(y - cy, x - cx);
+  previousAngle_ = atan2f(y - cy, x - cx) -
+                   orientationAngle(controlOrientation(c.flags));
   updateControl(activeControl_, x, y, true);
 }
 
@@ -696,35 +820,56 @@ void TouchOscLayout::updateControl(uint8_t index, float x, float y, bool forceSe
   if (c.type == TouchOscControlType::Button) {
     nextX = 1.0f;
   } else if (c.type == TouchOscControlType::Fader) {
-    nextX = ny;
+    const uint8_t orientation = controlOrientation(c.flags);
+    if (orientation == 1) nextX = nx;
+    else if (orientation == 2) nextX = 1.0f - ny;
+    else if (orientation == 3) nextX = 1.0f - nx;
+    else nextX = ny;
+    if (c.flags & TocInverted) nextX = 1.0f - nextX;
   } else if (c.type == TouchOscControlType::Xy) {
-    if (!(c.flags & TocLockX)) nextX = nx;
-    if (!(c.flags & TocLockY)) nextY = ny;
+    const uint8_t orientation = controlOrientation(c.flags);
+    float orientedX = nx;
+    float orientedY = ny;
+    if (orientation == 1) {
+      orientedX = 1.0f - ny;
+      orientedY = nx;
+    } else if (orientation == 2) {
+      orientedX = 1.0f - nx;
+      orientedY = 1.0f - ny;
+    } else if (orientation == 3) {
+      orientedX = ny;
+      orientedY = 1.0f - nx;
+    }
+    if (!(c.flags & TocLockX)) nextX = orientedX;
+    if (!(c.flags & TocLockY)) nextY = orientedY;
   } else {
     const float cx = c.x + c.width * 0.5f;
     const float cy = c.y + c.height * 0.5f;
     const float dx = (x - cx) / max(1.0f, c.width * 0.5f);
     const float dy = (y - cy) / max(1.0f, c.height * 0.5f);
     const float angle = atan2f(dy, dx);
+    const float orientedAngle = angle -
+                                orientationAngle(controlOrientation(c.flags));
     if (c.type == TouchOscControlType::Radar) {
       if (!(c.flags & TocLockX)) nextX = constrain(sqrtf(dx * dx + dy * dy), 0.0f, 1.0f);
-      if (!(c.flags & TocLockY)) nextY = normalizedAngle(angle + kPi / 2.0f) / (2.0f * kPi);
+      if (!(c.flags & TocLockY)) nextY = normalizedAngle(orientedAngle + kPi / 2.0f) / (2.0f * kPi);
     } else if (c.type == TouchOscControlType::Encoder && (c.flags & TocRelative)) {
-      float delta = angle - previousAngle_;
+      float delta = orientedAngle - previousAngle_;
       if (delta > kPi) delta -= 2.0f * kPi;
       if (delta < -kPi) delta += 2.0f * kPi;
       nextX = constrain(c.values[0] + delta / (2.0f * kPi), 0.0f, 1.0f);
       nextY = delta > 0.0001f ? 1.0f : (delta < -0.0001f ? 0.0f : 0.5f);
-      previousAngle_ = angle;
+      previousAngle_ = orientedAngle;
     } else if (c.type == TouchOscControlType::Encoder) {
-      nextX = normalizedAngle(angle + kPi / 2.0f) / (2.0f * kPi);
+      nextX = normalizedAngle(orientedAngle + kPi / 2.0f) / (2.0f * kPi);
       nextY = nextX >= c.values[0] ? 1.0f : 0.0f;
     } else {
       const float start = 2.0f * kPi / 3.0f;
       const float span = 5.0f * kPi / 3.0f;
-      float relative = normalizedAngle(angle - start);
+      float relative = normalizedAngle(orientedAngle - start);
       relative = constrain(relative, 0.0f, span);
       nextX = relative / span;
+      if (c.flags & TocInverted) nextX = 1.0f - nextX;
     }
   }
   const bool changed = fabsf(nextX - c.values[0]) > 0.0005f ||

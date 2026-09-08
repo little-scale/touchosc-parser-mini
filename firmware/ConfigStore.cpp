@@ -18,6 +18,8 @@ void ConfigStore::load(DeviceSettings &settings) {
   settings.oscTarget = preferences_.getString("osc_host", settings.oscTarget);
   settings.oscSendPort = preferences_.getUShort("osc_tx", settings.oscSendPort);
   settings.oscReceivePort = preferences_.getUShort("osc_rx", settings.oscReceivePort);
+  settings.oscIncludeDeviceName = preferences_.getBool(
+      "layout_prefix", settings.oscIncludeDeviceName);
   settings.imuRateHz = preferences_.getUChar("imu_hz", settings.imuRateHz);
   settings.imuOutputEnabled = preferences_.getBool("imu_out", settings.imuOutputEnabled);
   settings.bleEnabled = preferences_.getBool("ble", settings.bleEnabled);
@@ -36,6 +38,7 @@ void ConfigStore::load(DeviceSettings &settings) {
   settings.ballGravity = constrain(settings.ballGravity, 0.5f, 4.0f);
   settings.ballBounciness = constrain(settings.ballBounciness, 0.0f, 1.0f);
   settings.deviceName.trim();
+  settings.oscTarget.trim();
   if (settings.deviceName.isEmpty()) settings.deviceName = "device-0000";
 }
 
@@ -47,6 +50,7 @@ bool ConfigStore::save(const DeviceSettings &settings) {
   ok &= preferences_.putString("osc_host", settings.oscTarget) > 0;
   ok &= preferences_.putUShort("osc_tx", settings.oscSendPort) == sizeof(uint16_t);
   ok &= preferences_.putUShort("osc_rx", settings.oscReceivePort) == sizeof(uint16_t);
+  ok &= preferences_.putBool("layout_prefix", settings.oscIncludeDeviceName) == sizeof(bool);
   ok &= preferences_.putUChar("imu_hz", settings.imuRateHz) == sizeof(uint8_t);
   ok &= preferences_.putBool("imu_out", settings.imuOutputEnabled) == sizeof(bool);
   ok &= preferences_.putBool("ble", settings.bleEnabled) == sizeof(bool);
@@ -59,6 +63,22 @@ bool ConfigStore::save(const DeviceSettings &settings) {
   ok &= preferences_.putFloat("pitch_0", settings.pitchOffset) == sizeof(float);
   ok &= preferences_.putFloat("roll_0", settings.rollOffset) == sizeof(float);
   return ok;
+}
+
+uint32_t ConfigStore::provisioningRevision() {
+  return preferences_.getULong("prov_rev", 0);
+}
+
+bool ConfigStore::saveProvisioningRevision(uint32_t revision) {
+  return preferences_.putULong("prov_rev", revision) == sizeof(uint32_t);
+}
+
+uint32_t ConfigStore::defaultLayoutRevision() {
+  return preferences_.getULong("layout_rev", 0);
+}
+
+bool ConfigStore::saveDefaultLayoutRevision(uint32_t revision) {
+  return preferences_.putULong("layout_rev", revision) == sizeof(uint32_t);
 }
 
 void ConfigStore::clear() {

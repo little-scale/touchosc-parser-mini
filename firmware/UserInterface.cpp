@@ -142,23 +142,40 @@ void drawThickRoundRect(Arduino_GFX *target, int16_t x, int16_t y, int16_t width
   }
 }
 
-void drawWifiGlyph(Arduino_GFX *target, int16_t centerX, int16_t baselineY,
-                   uint16_t color) {
-  constexpr uint8_t kSegments = 12;
-  for (const int16_t radius : {7, 12}) {
-    int16_t previousX = centerX - radius;
-    int16_t previousY = baselineY;
-    for (uint8_t segment = 1; segment <= kSegments; ++segment) {
-      const float angle = kPi - (kPi * segment) / kSegments;
-      const int16_t nextX = centerX + lroundf(cosf(angle) * radius);
-      const int16_t nextY = baselineY - lroundf(sinf(angle) * radius);
-      target->drawLine(previousX, previousY, nextX, nextY, color);
-      target->drawLine(previousX, previousY + 1, nextX, nextY + 1, color);
-      previousX = nextX;
-      previousY = nextY;
-    }
+void drawCogGlyph(Arduino_GFX *target, int16_t centerX, int16_t centerY,
+                  uint16_t color, uint16_t cutoutColor) {
+  target->fillRect(centerX - 2, centerY - 12, 5, 6, color);
+  target->fillRect(centerX - 2, centerY + 6, 5, 6, color);
+  target->fillRect(centerX - 12, centerY - 2, 6, 5, color);
+  target->fillRect(centerX + 7, centerY - 2, 6, 5, color);
+  target->fillRect(centerX - 9, centerY - 9, 5, 5, color);
+  target->fillRect(centerX + 5, centerY - 9, 5, 5, color);
+  target->fillRect(centerX - 9, centerY + 5, 5, 5, color);
+  target->fillRect(centerX + 5, centerY + 5, 5, 5, color);
+  target->fillCircle(centerX, centerY, 9, color);
+  target->fillCircle(centerX, centerY, 3, cutoutColor);
+}
+
+void drawImuGlyph(Arduino_GFX *target, int16_t centerX, int16_t centerY,
+                  uint16_t color) {
+  target->fillCircle(centerX, centerY, 3, color);
+  for (uint8_t thickness = 0; thickness < 2; ++thickness) {
+    target->drawLine(centerX, centerY - thickness,
+                     centerX + 11, centerY - thickness, color);
+    target->drawLine(centerX + thickness, centerY,
+                     centerX + thickness, centerY - 11, color);
+    target->drawLine(centerX - thickness, centerY + thickness,
+                     centerX - 8 - thickness, centerY + 8 + thickness, color);
   }
-  target->fillCircle(centerX, baselineY + 1, 3, color);
+  target->fillTriangle(centerX + 12, centerY,
+                       centerX + 7, centerY - 4,
+                       centerX + 7, centerY + 4, color);
+  target->fillTriangle(centerX, centerY - 12,
+                       centerX - 4, centerY - 7,
+                       centerX + 4, centerY - 7, color);
+  target->fillTriangle(centerX - 9, centerY + 9,
+                       centerX - 3, centerY + 8,
+                       centerX - 8, centerY + 3, color);
 }
 
 void drawCenteredText(Arduino_GFX *target, const String &text, int16_t x, int16_t y,
@@ -183,9 +200,12 @@ void drawSetupButton(Arduino_GFX *target, int16_t x, int16_t y, int16_t width,
 
 bool UserInterface::begin(const DeviceSettings &settings) {
   dimAfterMs_ = settings.dimAfterMs;
+  savedWifiSsid_ = settings.wifiSsid;
+  savedWifiPassword_ = settings.wifiPassword;
   oscTargetText_ = settings.oscTarget;
   oscSendPortText_ = String(settings.oscSendPort);
   oscReceivePortText_ = String(settings.oscReceivePort);
+  oscIncludeDeviceName_ = settings.oscIncludeDeviceName;
   deviceNameText_ = settings.deviceName;
   savedDeviceName_ = settings.deviceName;
   ballGravity_ = constrain(settings.ballGravity, kMinimumBallGravity,
@@ -195,10 +215,7 @@ bool UserInterface::begin(const DeviceSettings &settings) {
                               kMaximumBallBounciness);
   physicsGravityEdit_ = ballGravity_;
   physicsBouncinessEdit_ = ballBounciness_;
-  char generatedName[16];
-  snprintf(generatedName, sizeof(generatedName), "device-%04x",
-           static_cast<uint16_t>(ESP.getEfuseMac()));
-  defaultDeviceName_ = generatedName;
+  defaultDeviceName_ = hardwareDeviceName();
   resetBalls();
   Wire.begin(IIC_SDA, IIC_SCL);
 
@@ -289,6 +306,7 @@ void UserInterface::forceRedraw() {
   hasDrawn_ = false;
   topStateValid_ = false;
   layoutOverlayValid_ = false;
+  drawnLandingIp_ = 0xffffffff;
   xyPartialValid_ = false;
   keyboardPartialValid_ = false;
   previousBackground_[0] = 255;
@@ -354,24 +372,45 @@ void UserInterface::closeWifiSetup() {
   touchOscLayout_.endTouch();
   touching_ = false;
   layoutWifiTouch_ = false;
+  layoutImuTouch_ = false;
   layoutPageTouch_ = false;
   activeTouch_ = TouchTarget::None;
   ignoreTouchUntilRelease_ = true;
   ignoreTouchStartedMs_ = millis();
+  WiFi.setAutoReconnect(true);
+  if (WiFi.status() != WL_CONNECTED && !savedWifiSsid_.isEmpty()) {
+    WiFi.begin(savedWifiSsid_.c_str(), savedWifiPassword_.c_str());
+  }
   forceRedraw();
 }
 
 void UserInterface::startWifiScan() {
-  WiFi.scanDelete();
-  WiFi.mode(WIFI_STA);
   wifiNetworkCount_ = 0;
   wifiNetworkPage_ = 0;
   wifiSetupPage_ = WifiSetupPage::Scanning;
+  wifiScanAttempt_ = 0;
+  beginWifiScanAttempt();
+  drawWifiSetup();
+}
+
+void UserInterface::beginWifiScanAttempt() {
+  WiFi.scanDelete();
+  // Cancel an in-progress auto-reconnect before asking the radio to scan. The
+  // ESP32 Wi-Fi stack otherwise rejects scan start with WIFI_SCAN_FAILED.
+  WiFi.setAutoReconnect(false);
+  WiFi.disconnect(false, false);
+  delay(100);
+  WiFi.mode(WIFI_STA);
+  // The radio can report a valid but empty asynchronous scan if scanning starts
+  // immediately after station mode is enabled, especially after a clean flash.
+  delay(120);
   wifiScanStartedMs_ = millis();
   const int16_t scanStart = WiFi.scanNetworks(true, true);
   wifiScanPending_ = scanStart == WIFI_SCAN_RUNNING || scanStart >= 0;
   wifiScanRetryAtMs_ = millis() + 300;
-  drawWifiSetup();
+  Serial.printf("wifi scan attempt=%u start=%d pending=%s\n",
+                wifiScanAttempt_ + 1, scanStart,
+                wifiScanPending_ ? "yes" : "no");
 }
 
 void UserInterface::serviceWifiSetup() {
@@ -382,18 +421,26 @@ void UserInterface::serviceWifiSetup() {
   }
 
   if (wifiSetupPage_ == WifiSetupPage::Scanning && !wifiScanPending_) {
-    if (millis() - wifiScanStartedMs_ >= kWifiScanTimeoutMs) {
+    if (static_cast<int32_t>(millis() - wifiScanRetryAtMs_) >= 0 &&
+        wifiScanAttempt_ < 2) {
+      ++wifiScanAttempt_;
+      beginWifiScanAttempt();
+    } else if (wifiScanAttempt_ >= 2) {
       wifiSetupPage_ = WifiSetupPage::Networks;
       drawWifiSetup();
-    } else if (static_cast<int32_t>(millis() - wifiScanRetryAtMs_) >= 0) {
-      WiFi.scanDelete();
-      const int16_t scanStart = WiFi.scanNetworks(true, true);
-      wifiScanPending_ = scanStart == WIFI_SCAN_RUNNING || scanStart >= 0;
-      wifiScanRetryAtMs_ = millis() + 500;
     }
   } else if (wifiSetupPage_ == WifiSetupPage::Scanning && wifiScanPending_) {
     const int16_t result = WiFi.scanComplete();
-    if (result >= 0) {
+    const bool timedOut = millis() - wifiScanStartedMs_ >= kWifiScanTimeoutMs;
+    if ((result == 0 || (result != WIFI_SCAN_RUNNING && result < 0) || timedOut) &&
+        wifiScanAttempt_ < 2) {
+      Serial.printf("wifi scan attempt=%u result=%d timeout=%s; retrying\n",
+                    wifiScanAttempt_ + 1, result, timedOut ? "yes" : "no");
+      ++wifiScanAttempt_;
+      beginWifiScanAttempt();
+    } else if (result >= 0) {
+      Serial.printf("wifi scan attempt=%u complete networks=%d\n",
+                    wifiScanAttempt_ + 1, result);
       wifiNetworkCount_ = 0;
       for (int16_t scanIndex = 0; scanIndex < result; ++scanIndex) {
         const String ssid = WiFi.SSID(scanIndex);
@@ -436,8 +483,9 @@ void UserInterface::serviceWifiSetup() {
       wifiScanPending_ = false;
       wifiSetupPage_ = WifiSetupPage::Networks;
       drawWifiSetup();
-    } else if (result != WIFI_SCAN_RUNNING ||
-               millis() - wifiScanStartedMs_ >= kWifiScanTimeoutMs) {
+    } else if (result != WIFI_SCAN_RUNNING || timedOut) {
+      Serial.printf("wifi scan attempt=%u failed result=%d timeout=%s\n",
+                    wifiScanAttempt_ + 1, result, timedOut ? "yes" : "no");
       WiFi.scanDelete();
       wifiScanPending_ = false;
       wifiSetupPage_ = WifiSetupPage::Networks;
@@ -483,10 +531,19 @@ void UserInterface::readWifiSetupTouch() {
 }
 
 const char *UserInterface::keyboardRow(uint8_t row) const {
-  static const char *lower[] = {"1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"};
-  static const char *upper[] = {"1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"};
-  static const char *symbols[] = {"!@#$%^&*()", "-_=+[]{}\\/", ".,:;'\"?~`", "<>|"};
-  return wifiSymbols_ ? symbols[row] : (wifiShift_ ? upper[row] : lower[row]);
+  static const char *lower[] = {"abcdefg", "hijklmn", "opqrstu", "vwxyz"};
+  static const char *upper[] = {"ABCDEFG", "HIJKLMN", "OPQRSTU", "VWXYZ"};
+  static const char *common[] = {"1234567", "890-_.@", "!#$%&*+", "=/?():;"};
+  static const char *more[] = {"\"',<>", "[]{}", "\\^`|~", ""};
+  if (wifiKeyboardMode_ == 1) return common[row];
+  if (wifiKeyboardMode_ == 2) return more[row];
+  return wifiShift_ ? upper[row] : lower[row];
+}
+
+const char *UserInterface::deviceKeyboardRow(uint8_t row) const {
+  static const char *letters[] = {"abcdefg", "hijklmn", "opqrstu", "vwxyz"};
+  static const char *numbers[] = {"1234567", "890-", "", ""};
+  return deviceKeyboardNumbers_ ? numbers[row] : letters[row];
 }
 
 void UserInterface::handleWifiSetupTap(int16_t x, int16_t y) {
@@ -513,7 +570,15 @@ void UserInterface::handleWifiSetupTap(int16_t x, int16_t y) {
     } else if (inside(x, y, 24, 204, 320, 60)) {
       deviceNameText_ = savedDeviceName_;
       deviceNameInputError_ = false;
+      deviceKeyboardNumbers_ = false;
       wifiSetupPage_ = WifiSetupPage::Device;
+      drawWifiSetup();
+    } else if (inside(x, y, 24, 280, 320, 48)) {
+      oscIncludeDeviceName_ = !oscIncludeDeviceName_;
+      UiEvent event;
+      event.type = UiEventType::ToggleOscDeviceName;
+      event.state = oscIncludeDeviceName_;
+      enqueue(event);
       drawWifiSetup();
     } else if (inside(x, y, 24, 344, 320, 64)) {
       closeWifiSetup();
@@ -529,7 +594,7 @@ void UserInterface::handleWifiSetupTap(int16_t x, int16_t y) {
         wifiSelectedSsid_ = wifiNetworks_[index];
         wifiPassword_ = "";
         wifiShift_ = false;
-        wifiSymbols_ = false;
+        wifiKeyboardMode_ = 0;
         wifiPasswordVisible_ = false;
         wifiPasswordError_ = false;
         wifiSetupPage_ = WifiSetupPage::Password;
@@ -572,25 +637,23 @@ void UserInterface::handleWifiSetupTap(int16_t x, int16_t y) {
 
     if (y >= 178 && y < 366) {
       const uint8_t row = (y - 178) / 47;
-      if ((y - 178) % 47 < 41) {
-        const int16_t keyX[3] = {10, 130, 250};
-        for (uint8_t col = 0; col < 3; ++col) {
-          if (!inside(x, y, keyX[col], 178 + row * 47, 108, 41)) continue;
-          static const char keys[] = "123456789.0<";
-          const char key = keys[row * 3 + col];
-          String *active = oscActiveField_ == 0 ? &oscTargetText_
-                            : (oscActiveField_ == 1 ? &oscSendPortText_
-                                                    : &oscReceivePortText_);
-          if (key == '<') {
-            if (!active->isEmpty()) active->remove(active->length() - 1);
-          } else if (key != '.' || oscActiveField_ == 0) {
-            const size_t limit = oscActiveField_ == 0 ? 15 : 5;
-            if (active->length() < limit) *active += key;
-          }
-          oscInputError_ = false;
-          drawWifiSetup();
-          return;
+      const int16_t keyX[3] = {10, 130, 250};
+      for (uint8_t col = 0; col < 3; ++col) {
+        if (!inside(x, y, keyX[col] - 5, 178 + row * 47, 118, 47)) continue;
+        static const char keys[] = "123456789.0<";
+        const char key = keys[row * 3 + col];
+        String *active = oscActiveField_ == 0 ? &oscTargetText_
+                          : (oscActiveField_ == 1 ? &oscSendPortText_
+                                                  : &oscReceivePortText_);
+        if (key == '<') {
+          if (!active->isEmpty()) active->remove(active->length() - 1);
+        } else if (key != '.' || oscActiveField_ == 0) {
+          const size_t limit = oscActiveField_ == 0 ? 15 : 5;
+          if (active->length() < limit) *active += key;
         }
+        oscInputError_ = false;
+        drawWifiSetup();
+        return;
       }
     }
 
@@ -619,15 +682,15 @@ void UserInterface::handleWifiSetupTap(int16_t x, int16_t y) {
   if (wifiSetupPage_ == WifiSetupPage::Device) {
     if (y >= 110 && y < 306) {
       const uint8_t row = (y - 110) / 50;
-      if ((y - 110) % 50 < 42) {
-        static const char *rows[] = {"1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm-"};
-        const char *keys = rows[row];
+      if ((y - 110) % 50 < 48) {
+        const char *keys = deviceKeyboardRow(row);
         const uint8_t count = strlen(keys);
+        if (count == 0) return;
         const int16_t gap = 3;
         const int16_t keyWidth = (kScreenWidth - 16 - (count - 1) * gap) / count;
         for (uint8_t col = 0; col < count; ++col) {
           const int16_t keyX = 8 + col * (keyWidth + gap);
-          if (!inside(x, y, keyX, 110 + row * 50, keyWidth, 42)) continue;
+          if (!inside(x, y, keyX, 110 + row * 50, keyWidth + gap, 48)) continue;
           if (deviceNameText_.length() < 24) deviceNameText_ += keys[col];
           deviceNameInputError_ = false;
           drawWifiSetup();
@@ -636,9 +699,11 @@ void UserInterface::handleWifiSetupTap(int16_t x, int16_t y) {
       }
     }
     if (y >= 314 && y < 360) {
-      if (x < 122) {
+      if (x < 90) {
+        deviceKeyboardNumbers_ = !deviceKeyboardNumbers_;
+      } else if (x < 180) {
         deviceNameText_ = "";
-      } else if (x < 246) {
+      } else if (x < 284) {
         deviceNameText_ = defaultDeviceName_;
       } else if (!deviceNameText_.isEmpty()) {
         deviceNameText_.remove(deviceNameText_.length() - 1);
@@ -713,14 +778,15 @@ void UserInterface::handleWifiSetupTap(int16_t x, int16_t y) {
   }
   if (y >= 110 && y < 306) {
     const uint8_t row = (y - 110) / 50;
-    if ((y - 110) % 50 >= 42) return;
+    if ((y - 110) % 50 >= 48) return;
     const char *keys = keyboardRow(row);
     const uint8_t count = strlen(keys);
+    if (count == 0) return;
     const int16_t gap = 3;
     const int16_t keyWidth = (kScreenWidth - 16 - (count - 1) * gap) / count;
     for (uint8_t col = 0; col < count; ++col) {
       const int16_t keyX = 8 + col * (keyWidth + gap);
-      if (inside(x, y, keyX, 110 + row * 50, keyWidth, 42)) {
+      if (inside(x, y, keyX, 110 + row * 50, keyWidth + gap, 48)) {
         if (wifiPassword_.length() < 63) wifiPassword_ += keys[col];
         wifiPasswordError_ = false;
         drawWifiSetup();
@@ -730,9 +796,9 @@ void UserInterface::handleWifiSetupTap(int16_t x, int16_t y) {
   }
   if (y >= 314 && y < 360) {
     if (x < 90) {
-      if (!wifiSymbols_) wifiShift_ = !wifiShift_;
+      if (wifiKeyboardMode_ == 0) wifiShift_ = !wifiShift_;
     } else if (x < 180) {
-      wifiSymbols_ = !wifiSymbols_;
+      wifiKeyboardMode_ = (wifiKeyboardMode_ + 1) % 3;
     } else if (x < 284) {
       if (wifiPassword_.length() < 63) wifiPassword_ += ' ';
     } else if (!wifiPassword_.isEmpty()) {
@@ -751,6 +817,8 @@ void UserInterface::handleWifiSetupTap(int16_t x, int16_t y) {
       event.type = UiEventType::WifiCredentials;
       event.text[0] = wifiSelectedSsid_;
       event.text[1] = wifiPassword_;
+      savedWifiSsid_ = wifiSelectedSsid_;
+      savedWifiPassword_ = wifiPassword_;
       enqueue(event);
       wifiSetupPage_ = WifiSetupPage::Connecting;
       wifiConnectStartedMs_ = millis();
@@ -792,6 +860,11 @@ void UserInterface::drawSettingsMenu(Arduino_GFX *target) {
                   foregroundColor_);
   drawSetupButton(target, 24, 204, 320, 60, "DEVICE", panelColor_, foregroundColor_,
                   foregroundColor_);
+  drawSetupButton(target, 24, 280, 320, 48,
+                  oscIncludeDeviceName_ ? "SEND NAME ON" : "SEND NAME OFF",
+                  oscIncludeDeviceName_ ? foregroundColor_ : panelColor_,
+                  foregroundColor_,
+                  oscIncludeDeviceName_ ? backgroundColor_ : foregroundColor_);
   drawSetupButton(target, 24, 344, 320, 64, "EXIT", panelColor_, mutedColor_,
                   foregroundColor_);
 }
@@ -850,13 +923,11 @@ void UserInterface::drawOscSettings(Arduino_GFX *target) {
                                            : (field == oscActiveField_ ? foregroundColor_
                                                                       : mutedColor_);
     drawThickRoundRect(target, 10, fieldY[field], 348, 42, 6, border);
-    target->setTextSize(1);
-    target->setTextColor(mutedColor_);
-    target->setCursor(20, fieldY[field] + 17);
-    target->print(labels[field]);
+    drawCenteredText(target, labels[field], 14, fieldY[field] + 13,
+                     76, 2, mutedColor_);
     target->setTextSize(2);
     target->setTextColor(foregroundColor_);
-    target->setCursor(86, fieldY[field] + 13);
+    target->setCursor(96, fieldY[field] + 13);
     target->print(*values[field]);
     drawCenteredText(target, "X", 314, fieldY[field] + 13, 34, 2, mutedColor_);
   }
@@ -870,7 +941,7 @@ void UserInterface::drawOscSettings(Arduino_GFX *target) {
       String label(keys[row * 3 + col]);
       if (label == "<") label = "DEL";
       const bool unavailableDot = label == "." && oscActiveField_ != 0;
-      drawSetupButton(target, x, y, 108, 41, unavailableDot ? "-" : label,
+      drawSetupButton(target, x, y, 108, 45, unavailableDot ? "-" : label,
                       panelColor_, mutedColor_,
                       unavailableDot ? mutedColor_ : foregroundColor_);
     }
@@ -889,27 +960,30 @@ void UserInterface::drawDeviceSettings(Arduino_GFX *target) {
                      deviceNameInputError_ ? rgb565(255, 82, 82) : foregroundColor_);
   drawCenteredText(target, deviceNameText_, 16, 64, 336, 2, foregroundColor_);
 
-  static const char *rows[] = {"1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm-"};
   for (uint8_t row = 0; row < 4; ++row) {
-    const char *keys = rows[row];
+    const char *keys = deviceKeyboardRow(row);
     const uint8_t count = strlen(keys);
+    if (count == 0) continue;
     const int16_t gap = 3;
     const int16_t keyWidth = (kScreenWidth - 16 - (count - 1) * gap) / count;
     for (uint8_t col = 0; col < count; ++col) {
       const int16_t x = 8 + col * (keyWidth + gap);
       const int16_t y = 110 + row * 50;
-      target->fillRoundRect(x, y, keyWidth, 42, 4, panelColor_);
-      target->drawRoundRect(x, y, keyWidth, 42, 4, mutedColor_);
-      drawCenteredText(target, String(keys[col]), x, y + 13, keyWidth, 2,
+      target->fillRoundRect(x, y, keyWidth, 46, 4, panelColor_);
+      target->drawRoundRect(x, y, keyWidth, 46, 4, mutedColor_);
+      drawCenteredText(target, String(keys[col]), x, y + 15, keyWidth, 2,
                        foregroundColor_);
     }
   }
 
-  drawSetupButton(target, 8, 314, 110, 46, "CLEAR", panelColor_, mutedColor_,
+  drawSetupButton(target, 8, 314, 80, 46,
+                  deviceKeyboardNumbers_ ? "ABC" : "123", panelColor_,
+                  mutedColor_, foregroundColor_);
+  drawSetupButton(target, 94, 314, 80, 46, "CLEAR", panelColor_, mutedColor_,
                   foregroundColor_);
-  drawSetupButton(target, 129, 314, 110, 46, "DEFAULT", panelColor_, mutedColor_,
+  drawSetupButton(target, 180, 314, 98, 46, "DEFAULT", panelColor_, mutedColor_,
                   foregroundColor_);
-  drawSetupButton(target, 250, 314, 110, 46, "DEL", panelColor_, mutedColor_,
+  drawSetupButton(target, 284, 314, 76, 46, "DEL", panelColor_, mutedColor_,
                   foregroundColor_);
   drawSetupButton(target, 10, 378, 168, 56, "BACK", panelColor_, foregroundColor_,
                   foregroundColor_);
@@ -970,21 +1044,25 @@ void UserInterface::drawWifiKeyboard(Arduino_GFX *target) {
   for (uint8_t row = 0; row < 4; ++row) {
     const char *keys = keyboardRow(row);
     const uint8_t count = strlen(keys);
+    if (count == 0) continue;
     const int16_t gap = 3;
     const int16_t keyWidth = (kScreenWidth - 16 - (count - 1) * gap) / count;
     for (uint8_t col = 0; col < count; ++col) {
       const int16_t x = 8 + col * (keyWidth + gap);
       const int16_t y = 110 + row * 50;
-      target->fillRoundRect(x, y, keyWidth, 42, 4, panelColor_);
-      target->drawRoundRect(x, y, keyWidth, 42, 4, mutedColor_);
+      target->fillRoundRect(x, y, keyWidth, 46, 4, panelColor_);
+      target->drawRoundRect(x, y, keyWidth, 46, 4, mutedColor_);
       String label(keys[col]);
-      drawCenteredText(target, label, x, y + 13, keyWidth, 2, foregroundColor_);
+      drawCenteredText(target, label, x, y + 15, keyWidth, 2, foregroundColor_);
     }
   }
 
-  drawSetupButton(target, 8, 314, 80, 46, wifiSymbols_ ? "-" : (wifiShift_ ? "abc" : "ABC"),
+  drawSetupButton(target, 8, 314, 80, 46,
+                  wifiKeyboardMode_ == 0 ? (wifiShift_ ? "abc" : "ABC") : "-",
                   panelColor_, mutedColor_, foregroundColor_);
-  drawSetupButton(target, 94, 314, 80, 46, wifiSymbols_ ? "ABC" : "#+=", panelColor_,
+  const char *nextMode = wifiKeyboardMode_ == 0 ? "123"
+                         : (wifiKeyboardMode_ == 1 ? "MORE" : "ABC");
+  drawSetupButton(target, 94, 314, 80, 46, nextMode, panelColor_,
                   mutedColor_, foregroundColor_);
   drawSetupButton(target, 180, 314, 98, 46, "SPACE", panelColor_, mutedColor_,
                   foregroundColor_);
@@ -1060,6 +1138,7 @@ void UserInterface::loop(ControlState &state, const ImuFrame &imu, float micEner
     }
     const bool overlayChanged = !layoutOverlayValid_ ||
                                 drawnLayoutWifiConnected_ != wifiConnected ||
+                                drawnLayoutImuOutputEnabled_ != imuOutputEnabled ||
                                 drawnLayoutBatteryPercent_ != batteryPercent_ ||
                                 drawnLayoutCharging_ != charging_;
     const uint32_t drawNowUs = micros();
@@ -1074,13 +1153,13 @@ void UserInterface::loop(ControlState &state, const ImuFrame &imu, float micEner
       touchOscLayout_.draw(target, kScreenWidth, kScreenHeight,
                            setupCanvas_ && layoutTransferBuffer_,
                            updateX, updateY, updateWidth, updateHeight);
-      drawLayoutStatusOverlay(target, wifiConnected);
+      drawLayoutStatusOverlay(target, wifiConnected, imuOutputEnabled);
       layoutDrawn = true;
       if (setupCanvas_) {
         flushLayoutRegion(updateX, updateY, updateWidth, updateHeight);
         if (overlayChanged) {
-          flushLayoutRegion(0, 0, 48, 44);
-          flushLayoutRegion(316, 0, 52, 44);
+          flushLayoutRegion(10, 0, 96, 44);
+          flushLayoutRegion(306, 0, 52, 44);
         }
       }
     }
@@ -1088,10 +1167,10 @@ void UserInterface::loop(ControlState &state, const ImuFrame &imu, float micEner
       Arduino_GFX *target = setupCanvas_
           ? static_cast<Arduino_GFX *>(setupCanvas_)
           : static_cast<Arduino_GFX *>(display_);
-      drawLayoutStatusOverlay(target, wifiConnected);
+      drawLayoutStatusOverlay(target, wifiConnected, imuOutputEnabled);
       if (setupCanvas_) {
-        flushLayoutRegion(0, 0, 48, 44);
-        flushLayoutRegion(316, 0, 52, 44);
+        flushLayoutRegion(10, 0, 96, 44);
+        flushLayoutRegion(306, 0, 52, 44);
       }
     }
     return;
@@ -1108,20 +1187,26 @@ void UserInterface::loop(ControlState &state, const ImuFrame &imu, float micEner
 
   const bool overlayChanged = !layoutOverlayValid_ ||
                               drawnLayoutWifiConnected_ != wifiConnected ||
+                              drawnLayoutImuOutputEnabled_ != imuOutputEnabled ||
                               drawnLayoutBatteryPercent_ != batteryPercent_ ||
                               drawnLayoutCharging_ != charging_;
+  const uint32_t currentLandingIp =
+      wifiConnected ? static_cast<uint32_t>(WiFi.localIP()) : 0;
+  const bool landingNetworkChanged =
+      drawnLayoutWifiConnected_ != wifiConnected ||
+      drawnLandingIp_ != currentLandingIp;
   Arduino_GFX *target = setupCanvas_
       ? static_cast<Arduino_GFX *>(setupCanvas_)
       : static_cast<Arduino_GFX *>(display_);
-  if (!hasDrawn_) {
-    drawLandingScreen(target, wifiConnected);
+  if (!hasDrawn_ || landingNetworkChanged) {
+    drawLandingScreen(target, wifiConnected, imuOutputEnabled);
     if (setupCanvas_) setupCanvas_->flush();
     hasDrawn_ = true;
   } else if (overlayChanged) {
-    drawLayoutStatusOverlay(target, wifiConnected);
+    drawLayoutStatusOverlay(target, wifiConnected, imuOutputEnabled);
     if (setupCanvas_) {
-      flushLayoutRegion(0, 0, 48, 44);
-      flushLayoutRegion(316, 0, 52, 44);
+      flushLayoutRegion(10, 0, 96, 44);
+      flushLayoutRegion(306, 0, 52, 44);
     }
   }
 }
@@ -1235,13 +1320,14 @@ void UserInterface::readTouch(ControlState &state) {
         touchStartedMs_ = millis();
         longActionSent_ = false;
         wake();
-        layoutWifiTouch_ = inside(x, y, 0, 0, 48, 48);
+        layoutWifiTouch_ = inside(x, y, 10, 0, 48, 48);
+        layoutImuTouch_ = inside(x, y, 58, 0, 48, 48);
         layoutPageTouch_ = touchOscLayout_.pageCount() > 1 &&
                            inside(x, y, 132, 0, 104, 48);
-        if (!layoutWifiTouch_ && !layoutPageTouch_) {
+        if (!layoutWifiTouch_ && !layoutImuTouch_ && !layoutPageTouch_) {
           touchOscLayout_.beginTouch(x, y, kScreenWidth, kScreenHeight);
         }
-      } else if (!layoutWifiTouch_ && !layoutPageTouch_) {
+      } else if (!layoutWifiTouch_ && !layoutImuTouch_ && !layoutPageTouch_) {
         touchOscLayout_.moveTouch(x, y, kScreenWidth, kScreenHeight);
       }
     } else if (touching_) {
@@ -1249,6 +1335,15 @@ void UserInterface::readTouch(ControlState &state) {
         layoutWifiTouch_ = false;
         touching_ = false;
         openWifiSetup();
+        return;
+      }
+      if (layoutImuTouch_) {
+        layoutImuTouch_ = false;
+        touching_ = false;
+        UiEvent event;
+        event.type = UiEventType::ToggleImuOutput;
+        enqueue(event);
+        wake();
         return;
       }
       if (layoutPageTouch_) {
@@ -1269,13 +1364,23 @@ void UserInterface::readTouch(ControlState &state) {
       touchStartedMs_ = millis();
       longActionSent_ = false;
       wake();
-      layoutWifiTouch_ = inside(x, y, 0, 0, 48, 48);
+      layoutWifiTouch_ = inside(x, y, 10, 0, 48, 48);
+      layoutImuTouch_ = inside(x, y, 58, 0, 48, 48);
     }
   } else if (touching_) {
     const bool openSettings = layoutWifiTouch_;
+    const bool toggleImu = layoutImuTouch_;
     touching_ = false;
     layoutWifiTouch_ = false;
-    if (openSettings) openWifiSetup();
+    layoutImuTouch_ = false;
+    if (openSettings) {
+      openWifiSetup();
+    } else if (toggleImu) {
+      UiEvent event;
+      event.type = UiEventType::ToggleImuOutput;
+      enqueue(event);
+      wake();
+    }
   }
 }
 
@@ -2290,8 +2395,8 @@ void UserInterface::drawTop(bool wifiConnected, bool bleEnabled, bool bleConnect
 
   const uint16_t wifiColor = wifiConnected ? rgb565(70, 224, 132) : mutedColor_;
   target->fillRoundRect(14 + kStatusBadgeShiftX, 6, 35, 31, 6, wifiColor);
-  const uint16_t wifiGlyph = rgb565(0, 0, 0);
-  drawWifiGlyph(target, 31 + kStatusBadgeShiftX, 28, wifiGlyph);
+  const uint16_t settingsGlyph = rgb565(0, 0, 0);
+  drawCogGlyph(target, 31 + kStatusBadgeShiftX, 21, settingsGlyph, wifiColor);
 
   // Give each status control its own stable colour identity: green for
   // settings/Wi-Fi, amber for BLE, and pink for raw IMU output.
@@ -2317,24 +2422,7 @@ void UserInterface::drawTop(bool wifiConnected, bool bleEnabled, bool bleConnect
   const uint16_t imuGlyph = rgb565(0, 0, 0);
   const int16_t imuCenterX = 107 + kStatusBadgeShiftX;
   const int16_t imuCenterY = 22;
-  target->fillCircle(imuCenterX, imuCenterY, 3, imuGlyph);
-  for (uint8_t thickness = 0; thickness < 2; ++thickness) {
-    target->drawLine(imuCenterX, imuCenterY - thickness,
-                     imuCenterX + 11, imuCenterY - thickness, imuGlyph);
-    target->drawLine(imuCenterX + thickness, imuCenterY,
-                     imuCenterX + thickness, imuCenterY - 11, imuGlyph);
-    target->drawLine(imuCenterX - thickness, imuCenterY + thickness,
-                     imuCenterX - 8 - thickness, imuCenterY + 8 + thickness, imuGlyph);
-  }
-  target->fillTriangle(imuCenterX + 12, imuCenterY,
-                       imuCenterX + 7, imuCenterY - 4,
-                       imuCenterX + 7, imuCenterY + 4, imuGlyph);
-  target->fillTriangle(imuCenterX, imuCenterY - 12,
-                       imuCenterX - 4, imuCenterY - 7,
-                       imuCenterX + 4, imuCenterY - 7, imuGlyph);
-  target->fillTriangle(imuCenterX - 9, imuCenterY + 9,
-                       imuCenterX - 3, imuCenterY + 8,
-                       imuCenterX - 8, imuCenterY + 3, imuGlyph);
+  drawImuGlyph(target, imuCenterX, imuCenterY, imuGlyph);
 
   const int16_t bx = 313;
   drawThickRoundRect(target, bx, 12, 30, 17, 3, foregroundColor_);
@@ -2361,7 +2449,8 @@ void UserInterface::drawTop(bool wifiConnected, bool bleEnabled, bool bleConnect
 }
 
 void UserInterface::drawLayoutStatusOverlay(Arduino_GFX *target,
-                                            bool wifiConnected) {
+                                            bool wifiConnected,
+                                            bool imuOutputEnabled) {
   if (!target) return;
   const uint16_t black = rgb565(0, 0, 0);
   const uint16_t white = rgb565(244, 244, 244);
@@ -2370,9 +2459,15 @@ void UserInterface::drawLayoutStatusOverlay(Arduino_GFX *target,
 
   // Opaque compact badges keep the indicators readable over arbitrary uploaded
   // layouts while leaving almost the entire TouchOSC surface untouched.
-  target->fillRoundRect(4, 4, 40, 36, 8, black);
-  target->drawRoundRect(4, 4, 40, 36, 8, wifiColor);
-  drawWifiGlyph(target, 24, 30, wifiColor);
+  target->fillRoundRect(14, 4, 40, 36, 8, black);
+  target->drawRoundRect(14, 4, 40, 36, 8, wifiColor);
+  drawCogGlyph(target, 34, 22, wifiColor, black);
+
+  const uint16_t imuColor = imuOutputEnabled ? rgb565(255, 72, 176)
+                                              : rgb565(110, 110, 110);
+  target->fillRoundRect(62, 4, 40, 36, 8, black);
+  target->drawRoundRect(62, 4, 40, 36, 8, imuColor);
+  drawImuGlyph(target, 82, 22, imuColor);
 
   if (touchOscLayout_.pageCount() > 1) {
     target->fillRoundRect(138, 4, 92, 36, 8, black);
@@ -2382,8 +2477,8 @@ void UserInterface::drawLayoutStatusOverlay(Arduino_GFX *target,
     drawCenteredText(target, pageLabel, 138, 15, 92, 2, white);
   }
 
-  target->fillRoundRect(320, 4, 44, 36, 8, black);
-  const int16_t bx = 326;
+  target->fillRoundRect(310, 4, 44, 36, 8, black);
+  const int16_t bx = 316;
   const int16_t by = 14;
   for (uint8_t inset = 0; inset < 2; ++inset) {
     target->drawRoundRect(bx + inset, by + inset, 29 - inset * 2,
@@ -2408,13 +2503,15 @@ void UserInterface::drawLayoutStatusOverlay(Arduino_GFX *target,
   }
 
   drawnLayoutWifiConnected_ = wifiConnected;
+  drawnLayoutImuOutputEnabled_ = imuOutputEnabled;
   drawnLayoutBatteryPercent_ = batteryPercent_;
   drawnLayoutCharging_ = charging_;
   layoutOverlayValid_ = true;
 }
 
 void UserInterface::drawLandingScreen(Arduino_GFX *target,
-                                      bool wifiConnected) {
+                                      bool wifiConnected,
+                                      bool imuOutputEnabled) {
   if (!target) return;
   const uint16_t black = rgb565(0, 0, 0);
   const uint16_t white = rgb565(244, 244, 244);
@@ -2428,19 +2525,22 @@ void UserInterface::drawLandingScreen(Arduino_GFX *target,
 
   if (wifiConnected) {
     drawCenteredText(target, "READY TO UPLOAD", 0, 246, kScreenWidth, 2, ready);
-    drawCenteredText(target, "OPEN IN A BROWSER", 0, 287, kScreenWidth, 1, muted);
-    drawCenteredText(target, String("http://") + savedDeviceName_ + ".local",
-                     0, 310, kScreenWidth, 1, white);
+    drawCenteredText(target, "OPEN IN A BROWSER", 0, 287, kScreenWidth, 2, muted);
+    drawCenteredText(target, savedDeviceName_ + ".local",
+                     0, 310, kScreenWidth, 2, white);
+    drawCenteredText(target, String("IP ") + WiFi.localIP().toString(),
+                     0, 333, kScreenWidth, 2, white);
   } else {
     drawCenteredText(target, "WI-FI NOT CONNECTED", 0, 246,
                      kScreenWidth, 2, muted);
-    drawCenteredText(target, "TAP THE WI-FI ICON", 0, 287,
-                     kScreenWidth, 1, white);
+    drawCenteredText(target, "TAP THE SETTINGS COG", 0, 287,
+                     kScreenWidth, 2, white);
   }
 
   drawCenteredText(target, "INSTALL A LAYOUT TO BEGIN", 0, 374,
-                   kScreenWidth, 1, muted);
-  drawLayoutStatusOverlay(target, wifiConnected);
+                   kScreenWidth, 2, muted);
+  drawLayoutStatusOverlay(target, wifiConnected, imuOutputEnabled);
+  drawnLandingIp_ = wifiConnected ? static_cast<uint32_t>(WiFi.localIP()) : 0;
 }
 
 void UserInterface::drawCurrentPage(const ControlState &state) {
