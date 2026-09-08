@@ -10,6 +10,8 @@ TouchOSC Parser Mini is a standalone embedded layout player. It displays a suppo
 
 TouchOSC is fantastic software. TouchOSC Parser Mini is an independent community project and is not affiliated with, endorsed by, sponsored by, or associated with TouchOSC or its developers. TouchOSC is a trademark of its respective owner.
 
+First-party TouchOSC Parser Mini code is licensed under the MIT License, copyright 2026 Sebastian Tomczak. Code under `vendor/` retains its own third-party licences and notices.
+
 ## Current behavior
 
 - One persistent installed layout set in FFat.

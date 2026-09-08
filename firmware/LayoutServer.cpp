@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sebastian Tomczak
+// SPDX-License-Identifier: MIT
+
 #include "LayoutServer.h"
 
 #include <WiFi.h>

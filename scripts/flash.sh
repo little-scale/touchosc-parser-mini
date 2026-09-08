@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 Sebastian Tomczak
+# SPDX-License-Identifier: MIT
+
 set -eu
 
 if [ "$#" -ne 1 ]; then

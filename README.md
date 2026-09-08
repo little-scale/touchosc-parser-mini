@@ -51,4 +51,6 @@ Do not use a V1 board configuration: that revision uses different display and to
 
 ## Origins and licence
 
-This firmware began from portions of [Micro Apps for ESP32-S3 Touch AMOLED 1.8](https://github.com/little-scale/micro-apps-for-esp32-s3-touch-amoled-1.8) by Sebastian Tomczak. TouchOSC Parser Mini remains available under the GNU General Public License version 3 in accordance with that project's licence. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution and the licences included with the pinned vendor libraries.
+This firmware began from portions of [Micro Apps for ESP32-S3 Touch AMOLED 1.8](https://github.com/little-scale/micro-apps-for-esp32-s3-touch-amoled-1.8) by Sebastian Tomczak. As the copyright holder of that original code, Sebastian Tomczak has relicensed the first-party code used by TouchOSC Parser Mini under the [MIT License](LICENSE).
+
+Bundled third-party libraries are not covered by the project's MIT licence. They retain their own licences and notices; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

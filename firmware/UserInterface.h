@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sebastian Tomczak
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 #include <Adafruit_XCA9554.h>

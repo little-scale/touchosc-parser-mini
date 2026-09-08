@@ -6,7 +6,7 @@ TouchOSC Parser Mini began from portions of **Micro Apps for ESP32-S3 Touch AMOL
 
 https://github.com/little-scale/micro-apps-for-esp32-s3-touch-amoled-1.8
 
-The upstream project is distributed under the GNU General Public License version 3. TouchOSC Parser Mini preserves that licence. The upstream project's original performance-page code remains visible in parts of the current source history while the standalone runtime is being progressively simplified.
+The original project was published under the GNU General Public License version 3. Sebastian Tomczak, as copyright holder of the code incorporated into TouchOSC Parser Mini, has relicensed that first-party code under the MIT License for this project. The original performance-page code remains visible in parts of the current source history while the standalone runtime is being progressively simplified.
 
 ## TouchOSC
 
@@ -18,3 +18,4 @@ No TouchOSC application code, artwork, or bundled assets are included in this re
 
 The `vendor/waveshare-v2` directory contains libraries derived from or distributed with Waveshare's ESP32-S3-Touch-AMOLED-1.8 V2 examples. Individual licence and notice files are retained alongside those libraries where supplied.
 
+These third-party libraries are not relicensed by TouchOSC Parser Mini. Each remains subject to the licence terms found with its source.

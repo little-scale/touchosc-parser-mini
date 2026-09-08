@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Sebastian Tomczak
+// SPDX-License-Identifier: MIT
+
 #include <Arduino.h>
 #include <ESPmDNS.h>
 #include <WiFi.h>
